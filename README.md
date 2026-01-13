@@ -1,17 +1,41 @@
-# React + Vite
+# 🎨 AstroArts
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A collaborative, gamified art challenge platform designed for friends to share creativity anonymously. Create prompts, submit art, vote for favorites, and climb the cosmic ranks!
 
-Currently, two official plugins are available:
+## ✨  Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Prompt Challenges: Users can create drawing prompts with deadlines.
 
-## React Compiler
+Anonymous Submissions: Submissions are anonymous until the challenge ends.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Voting System: Users can vote for their favorite pieces (configurable max votes per challenge).
 
-## Expanding the ESLint configuration
+Gamification:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
-# AstroPromptArt
+Leaderboard: Track total votes across all challenges.
+
+Cosmic Ranks: Earn titles like "Moon Walker" or "Universe Creator" based on votes received.
+
+Interactive Lightbox: View art in full screen, zoom, vote, and comment.
+
+Comments: Leave anonymous feedback (names revealed after the deadline).
+
+Mission Recap: Automatic collage generation for expired challenges showcasing the winner.
+
+Admin Control: Special "Tourist" admin role for moderation (deleting content).
+
+Mobile First: Fully responsive design that looks great on phones and desktops.
+
+## Tech Stack
+
+Frontend: React (Vite)
+
+Styling: Tailwind CSS
+
+Backend/Database: Firebase (Firestore)
+
+Authentication: Firebase Auth (Anonymous & Persistent Identity)
+
+Hosting: Firebase Hosting
+
+Icons: Lucide React
