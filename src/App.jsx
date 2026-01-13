@@ -3,7 +3,6 @@ import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
-  signInWithCustomToken, 
   onAuthStateChanged,
   signOut
 } from 'firebase/auth';
@@ -57,7 +56,9 @@ import {
   MessageSquare,
   Send,
   LogOut,
-  Zap
+  Zap,
+  AlertTriangle,
+  Copy
 } from 'lucide-react';
 
 // --- Firebase Configuration ---
@@ -130,7 +131,9 @@ export default function App() {
   
   // Navigation & View State
   const [viewMode, setViewMode] = useState('challenges'); 
-  const [fullScreenArtId, setFullScreenArtId] = useState(null); // Changed to ID for real-time updates
+  const [fullScreenArtId, setFullScreenArtId] = useState(null); 
+  const [dbError, setDbError] = useState(false); 
+  const [showRules, setShowRules] = useState(false); 
 
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
@@ -144,45 +147,66 @@ export default function App() {
   const [submissionForm, setSubmissionForm] = useState({ title: '', imageUrl: '', passwordAttempt: '' });
   const [tempUsername, setTempUsername] = useState('');
   const [tempSecret, setTempSecret] = useState('');
-  const [commentText, setCommentText] = useState(''); // New comment state
+  const [commentText, setCommentText] = useState(''); 
   
   const [message, setMessage] = useState(null);
   const fileInputRef = useRef(null);
 
+  // --- AUTHENTICATION ---
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) { console.error("Auth error:", error); }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+      } else {
+        signInAnonymously(auth).catch((error) => {
+            console.warn("Auth warning:", error);
+            setMessage({ text: "Login failed. Check connection.", type: 'error' });
+        });
+      }
+    });
     return () => unsubscribe();
   }, []);
 
+  // --- DATA SYNC ---
   useEffect(() => {
     if (!user) return;
     
+    // 1. Prompts
     const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'prompts');
     const unsubscribeP = onSnapshot(pRef, (snap) => {
       setPrompts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+      setDbError(false);
+    }, (error) => {
+        if (error.code === 'permission-denied') {
+            setDbError(true);
+            console.warn("Firestore: Permission denied (Check Database Rules).");
+        } else {
+            console.error("Prompts sync error:", error);
+        }
     });
 
+    // 2. Submissions
     const sRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
     const unsubscribeS = onSnapshot(sRef, (snap) => {
       setSubmissions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => {
+        if (error.code === 'permission-denied') {
+            setDbError(true);
+        } else {
+            console.error("Submissions sync error:", error);
+        }
     });
 
+    // 3. User Votes (Initial session load)
     const uvRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'votes');
     const unsubscribeV = onSnapshot(uvRef, (docSnap) => {
-      if (docSnap.exists()) setUserVoteData(docSnap.data());
-      else setUserVoteData({ votedFor: [] });
+      if (!userProfile.username && docSnap.exists()) setUserVoteData(docSnap.data());
+      else if (!userProfile.username) setUserVoteData({ votedFor: [] });
+    }, (error) => {
+       if (error.code !== 'permission-denied') console.warn("Guest vote sync warning:", error);
     });
 
+    // 4. User Profile
     const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'profile');
     const unsubscribeProfile = onSnapshot(profileRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -194,10 +218,41 @@ export default function App() {
         setTempUsername('');
       }
       setIsProfileLoading(false);
+    }, (error) => {
+        console.error("Profile sync error:", error);
     });
 
     return () => { unsubscribeP(); unsubscribeS(); unsubscribeV(); unsubscribeProfile(); };
   }, [user]);
+
+  // --- VOTE SYNC LOGIC (Switch between Guest vs Registered) ---
+  useEffect(() => {
+    if (!user) return;
+
+    let unsubscribeVotes;
+
+    if (userProfile.username) {
+        // If logged in, listen to GLOBAL Registry votes
+        const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', userProfile.username.toLowerCase());
+        unsubscribeVotes = onSnapshot(registryRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                setUserVoteData({ votedFor: data.votedFor || [] });
+            } else {
+                setUserVoteData({ votedFor: [] });
+            }
+        }, (error) => {
+            if (error.code === 'permission-denied') {
+                setDbError(true);
+            } else {
+                console.error("Registry sync error:", error);
+            }
+        });
+    }
+
+    return () => { if (unsubscribeVotes) unsubscribeVotes(); };
+  }, [user, userProfile.username]);
+
 
   // Force Profile Modal if no username set
   useEffect(() => {
@@ -223,7 +278,7 @@ export default function App() {
   const fullScreenArt = useMemo(() => {
     if (!fullScreenArtId) return null;
     if (fullScreenArtId.type === 'prompt') return fullScreenArtId; // Handle prompt preview case
-    // Use raw submissions here so deleting logic works even if prompt is gone momentarily, though UI hides it
+    // Use raw submissions here so deleting logic works even if prompt is gone momentarily
     return submissions.find(s => s.id === fullScreenArtId) || null;
   }, [fullScreenArtId, submissions]);
 
@@ -258,7 +313,6 @@ export default function App() {
   // Fix: Banner art is now MOST RECENT valid submission, not global winner
   const bannerArt = useMemo(() => {
     if (validSubmissions.length === 0) return null;
-    // Sort by createdAt descending (newest first)
     return [...validSubmissions].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))[0];
   }, [validSubmissions]);
 
@@ -271,33 +325,31 @@ export default function App() {
     return prompts.filter(p => p.deadline && new Date() > new Date(p.deadline));
   }, [prompts]);
 
-  // Fix: Leaderboard uses valid submissions
+  // Leaderboard uses valid submissions
   const leaderboardData = useMemo(() => {
-    const stats = {};
+    const nameStats = {};
     validSubmissions.forEach(sub => {
-      if (!stats[sub.authorId]) {
-        stats[sub.authorId] = { 
-          name: sub.artistName || "Anonymous", 
-          totalVotes: 0, 
-          entries: 0
-        };
-      }
-      stats[sub.authorId].totalVotes += (sub.votes || 0);
-      stats[sub.authorId].entries += 1;
+        const name = sub.artistName || "Anonymous";
+        if (name === "Anonymous") return; 
+        if (!nameStats[name]) nameStats[name] = { name, totalVotes: 0, entries: 0 };
+        nameStats[name].totalVotes += (sub.votes || 0);
+        nameStats[name].entries += 1;
     });
-    return Object.values(stats).sort((a, b) => b.totalVotes - a.totalVotes);
+
+    return Object.values(nameStats).sort((a, b) => b.totalVotes - a.totalVotes);
   }, [validSubmissions]);
 
-  // Fix: My submissions uses valid submissions
   const mySubmissions = useMemo(() => {
     if (!user) return [];
+    if (userProfile.username) {
+        return validSubmissions.filter(s => s.artistName === userProfile.username).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    }
     return validSubmissions.filter(s => s.authorId === user.uid).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-  }, [validSubmissions, user]);
+  }, [validSubmissions, user, userProfile]);
 
   const myStats = useMemo(() => {
-    if (!user) return { totalVotes: 0 };
-    return validSubmissions.filter(s => s.authorId === user.uid).reduce((acc, curr) => ({ totalVotes: acc.totalVotes + (curr.votes || 0) }), { totalVotes: 0 });
-  }, [validSubmissions, user]);
+    return mySubmissions.reduce((acc, curr) => ({ totalVotes: acc.totalVotes + (curr.votes || 0) }), { totalVotes: 0 });
+  }, [mySubmissions]);
 
   const handleFileChange = async (e, type) => {
     const file = e.target.files[0];
@@ -335,7 +387,6 @@ export default function App() {
   const handleUpdatePrompt = async (e) => {
     e.preventDefault();
     if (!selectedPrompt) return;
-    
     setIsSubmitting(true);
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'prompts', selectedPrompt.id), {
@@ -371,7 +422,7 @@ export default function App() {
         ...submissionForm, 
         artistName: userProfile.username,
         votes: 0, 
-        comments: [], // Initialize comments array
+        comments: [], 
         authorId: user.uid, 
         createdAt: serverTimestamp()
       });
@@ -385,8 +436,6 @@ export default function App() {
   const handlePostComment = async (e) => {
     e.preventDefault();
     if (!user || !fullScreenArt || !commentText.trim()) return;
-    
-    // Safety check: if viewing a prompt (not art), don't comment
     if (!fullScreenArt.id || fullScreenArt.type === 'prompt') return;
 
     try {
@@ -412,7 +461,7 @@ export default function App() {
   const handleSaveProfile = async (e) => {
     e.preventDefault();
     if (!user) return;
-    if (userProfile.username) return showMessage("Username is locked and cannot be changed.", "error");
+    if (userProfile.username) return showMessage("Username is locked.", "error");
 
     const nameToSave = tempUsername.trim();
     const secretToSave = tempSecret.trim();
@@ -424,25 +473,33 @@ export default function App() {
         const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', nameToSave.toLowerCase());
         const registrySnap = await getDoc(registryRef);
 
+        let existingVotes = [];
+
         if (registrySnap.exists()) {
             const data = registrySnap.data();
             if (data.secretPhrase !== secretToSave) {
                 setIsSubmitting(false);
                 return showMessage("Username taken. Incorrect secret phrase.", "error");
             }
+            existingVotes = data.votedFor || [];
         } else {
-            if (nameToSave.toLowerCase() === 'tourist') {
-                if (secretToSave !== 'I am tourist') {
-                    setIsSubmitting(false);
-                    return showMessage("You are not the Admin.", "error");
-                }
+            if (nameToSave.toLowerCase() === 'tourist' && secretToSave !== 'I am tourist') {
+                setIsSubmitting(false);
+                return showMessage("You are not the Admin.", "error");
             }
+            // Register globally
             await setDoc(registryRef, {
                 secretPhrase: secretToSave,
                 createdBy: user.uid,
+                votedFor: [], 
                 createdAt: serverTimestamp()
             });
         }
+
+        const currentGuestVotes = userVoteData.votedFor || [];
+        const mergedVotes = [...new Set([...existingVotes, ...currentGuestVotes])];
+        
+        await setDoc(registryRef, { votedFor: mergedVotes }, { merge: true });
 
         let finalName = nameToSave;
         if (nameToSave.toLowerCase() === 'tourist') finalName = 'Tourist';
@@ -472,60 +529,79 @@ export default function App() {
   };
 
   const handleDeleteArt = async (artId) => {
-    if (!window.confirm("Are you sure you want to delete this submission?")) return;
+    // SECURITY CHECK: Verify if prompt is expired
+    const art = submissions.find(s => s.id === artId);
+    if (art) {
+        const p = prompts.find(pr => pr.id === art.promptId);
+        if (p && p.deadline && new Date() > new Date(p.deadline)) {
+            showMessage("Cannot delete archived submissions.", "error");
+            return;
+        }
+    }
+
+    const confirmation = window.prompt("To delete this submission, type 'daddy' below:");
+    if (confirmation !== "daddy") {
+        if (confirmation !== null) showMessage("Incorrect confirmation.", "error");
+        return;
+    }
+
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'submissions', artId));
       if (fullScreenArtId === artId) setFullScreenArtId(null);
-      showMessage("Submission deleted successfully", "success");
-    } catch (error) {
-      showMessage("Failed to delete submission", "error");
-    }
+      showMessage("Deleted", "success");
+    } catch (error) { showMessage("Failed", "error"); }
   };
 
   const handleDeletePrompt = async (promptId) => {
-    if (!window.confirm("Delete this prompt?")) return;
+    const confirmation = window.prompt("To delete this prompt, type 'daddy' below:");
+    if (confirmation !== "daddy") {
+        if (confirmation !== null) showMessage("Incorrect confirmation.", "error");
+        return;
+    }
+
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'prompts', promptId));
       setSelectedPrompt(null);
       showMessage("Prompt deleted", "success");
-    } catch (error) {
-      showMessage("Failed to delete prompt.", "error");
-    }
+    } catch (error) { showMessage("Failed", "error"); }
   };
 
   const handleVote = async (artId) => {
     if (!user) return;
     
-    // Find the art and its prompt
     const artPiece = submissions.find(s => s.id === artId);
-    let limit = 2; // Fallback default
+    let limit = 2; 
     let pId = null;
 
     if (artPiece) {
        pId = artPiece.promptId;
        const artPrompt = prompts.find(p => p.id === artPiece.promptId);
-       
        if (artPrompt) {
            limit = artPrompt.maxVotes || 2;
            if (artPrompt.deadline && new Date() > new Date(artPrompt.deadline)) {
-             return showMessage("Voting has ended for this prompt!", "error");
+             return showMessage("Voting ended!", "error");
            }
        }
     }
 
     const isVoted = userVoteData.votedFor.includes(artId);
-    const uvRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'votes');
     const aRef = doc(db, 'artifacts', appId, 'public', 'data', 'submissions', artId);
     
+    let userVotesRef;
+    if (userProfile.username) {
+        userVotesRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', userProfile.username.toLowerCase());
+    } else {
+        userVotesRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'votes');
+    }
+
     if (isVoted) {
-      await updateDoc(uvRef, { votedFor: arrayRemove(artId) });
+      await updateDoc(userVotesRef, { votedFor: arrayRemove(artId) });
       await updateDoc(aRef, { votes: increment(-1) });
     } else {
       const currentVotes = getVotesForPrompt(pId);
-      if (currentVotes >= limit) {
-          return showMessage(`Max ${limit} votes allowed for this prompt!`, "error");
-      }
-      await setDoc(uvRef, { votedFor: arrayUnion(artId) }, { merge: true });
+      if (currentVotes >= limit) return showMessage(`Max ${limit} votes!`, "error");
+      
+      await setDoc(userVotesRef, { votedFor: arrayUnion(artId) }, { merge: true });
       await updateDoc(aRef, { votes: increment(1) });
     }
   };
@@ -537,6 +613,78 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white font-sans selection:bg-purple-500">
+      {/* Error Banner */}
+      {dbError && (
+        <div className="fixed top-0 left-0 right-0 bg-rose-600 text-white p-4 text-center z-[200] flex flex-col items-center gap-2 shadow-2xl">
+           <div className="flex items-center gap-2">
+             <AlertTriangle size={20} />
+             <span className="font-bold">Database Access Denied</span>
+           </div>
+           <p className="text-sm">You need to update your Firestore Security Rules in the Firebase Console.</p>
+           <button 
+             onClick={() => setShowRules(!showRules)}
+             className="bg-white text-rose-600 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-rose-50 transition-colors mt-2"
+           >
+             {showRules ? "Hide Rules" : "View Required Rules"}
+           </button>
+           {showRules && (
+             <div className="mt-4 bg-black/50 p-4 rounded-xl w-full max-w-2xl text-left relative">
+                <button onClick={() => {
+                  const rules = `rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    function isSignedIn() { return request.auth != null; }\n    match /artifacts/{appId}/public/data/prompts/{document} { allow read: true; allow create: if isSignedIn(); allow update, delete: if isSignedIn(); }\n    match /artifacts/{appId}/public/data/submissions/{document} { allow read: true; allow create: if isSignedIn(); allow update: if isSignedIn(); allow delete: if isSignedIn(); }\n    match /artifacts/{appId}/public/data/registry/{username} { allow read: true; allow write: if isSignedIn(); }\n    match /artifacts/{appId}/users/{userId}/settings/profile { allow read, write: if isSignedIn() && request.auth.uid == userId; }\n    match /artifacts/{appId}/users/{userId}/settings/votes { allow read, write: if isSignedIn() && request.auth.uid == userId; }\n  }\n}`;
+                  const textArea = document.createElement("textarea");
+                  textArea.value = rules;
+                  document.body.appendChild(textArea);
+                  textArea.select();
+                  try { document.execCommand('copy'); } catch (e) {}
+                  document.body.removeChild(textArea);
+                }} className="absolute top-2 right-2 text-white/70 hover:text-white"><Copy size={16} /></button>
+                <pre className="text-[10px] md:text-xs font-mono text-neutral-300 overflow-x-auto whitespace-pre-wrap">
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is signed in
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // 1. PROMPTS (Challenges)
+    match /artifacts/{appId}/public/data/prompts/{document} {
+      allow read: if true; 
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn();
+    }
+    
+    // 2. SUBMISSIONS (Art)
+    match /artifacts/{appId}/public/data/submissions/{document} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+    
+    // 3. GLOBAL REGISTRY (Critical for Usernames)
+    match /artifacts/{appId}/public/data/registry/{username} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // 4. USER SETTINGS
+    match /artifacts/{appId}/users/{userId}/settings/profile {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+    
+    match /artifacts/{appId}/users/{userId}/settings/votes {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+  }
+}`}
+                </pre>
+             </div>
+           )}
+        </div>
+      )}
+
       {/* Banner */}
       <section className="relative h-64 md:h-80 w-full overflow-hidden border-b border-white/5">
         {bannerArt ? (
@@ -595,24 +743,6 @@ export default function App() {
                   </button>
                 </div>
               )}
-              
-              {!selectedPrompt && (
-                <div className="hidden md:block h-8 w-[1px] bg-white/10 mx-2 flex-shrink-0"></div>
-              )}
-
-              <div className="min-w-0">
-                <h2 className="text-lg sm:text-xl font-bold truncate">
-                  {selectedPrompt ? String(selectedPrompt.title) : (viewMode === 'challenges' ? "Active Prompts" : (viewMode === 'museum' ? "The Archives" : "Hall of Fame"))}
-                </h2>
-                {selectedPrompt && (
-                    <div className="flex items-center gap-2">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
-                            {currentPromptVotesUsed}/{selectedPrompt.maxVotes || 2} votes used
-                        </p>
-                        {isAdmin && <span className="bg-rose-600 text-white px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex items-center gap-1"><ShieldAlert size={10} /> Admin</span>}
-                    </div>
-                )}
-              </div>
             </div>
 
             {/* Action Buttons */}
@@ -627,6 +757,19 @@ export default function App() {
               </button>
             </div>
           </div>
+          
+          {/* Subheader: Active Prompt Stats */}
+          {selectedPrompt && (
+              <div className="flex items-center justify-between border-t border-white/5 pt-4 mt-2">
+                   <h2 className="text-lg sm:text-xl font-bold truncate max-w-[70%]">{selectedPrompt.title}</h2>
+                   <div className="flex items-center gap-2">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
+                            {currentPromptVotesUsed}/{selectedPrompt.maxVotes || 2} votes used
+                        </p>
+                        {isAdmin && <span className="bg-rose-600 text-white px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex items-center gap-1"><ShieldAlert size={10} /> Admin</span>}
+                   </div>
+              </div>
+          )}
         </div>
 
         {/* --- LEADERBOARD --- */}
@@ -760,7 +903,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3 text-sm text-neutral-300 font-medium">
                     <Vote className="text-purple-400" size={18} />
-                    <span className="text-xs md:text-sm">Max Votes: {selectedPrompt.maxVotes || 2}</span>
+                    <span className="text-xs md:text-sm">{currentPromptVotesUsed}/{selectedPrompt.maxVotes || 2} Votes Used</span>
                   </div>
                 </div>
                 <div className="flex flex-col sm:flex-row gap-4">
@@ -841,36 +984,28 @@ export default function App() {
                             </div>
                           </div>
                           
-                          <div className="p-3 flex items-center justify-between gap-2">
-                             <div className="min-w-0 flex-1">
-                                <h4 className="text-sm font-bold text-white truncate">{art.title}</h4>
-                                <div className="flex items-center gap-1 text-[10px] text-neutral-400">
-                                   <User size={10} />
-                                   <span className="truncate">{isPromptExpired ? (art.artistName || "Unknown") : "Anonymous"}</span>
-                                </div>
-                             </div>
-                             
-                             <div className="flex items-center gap-2">
-                                {(isAdmin || (user && user.uid === art.authorId)) && (
-                                    <button onClick={(e) => { e.stopPropagation(); handleDeleteArt(art.id); }} className="text-neutral-500 hover:text-rose-500 transition-colors"><Trash2 size={16} /></button>
-                                )}
-                                
-                                <div className="flex flex-col gap-1 items-end">
+                          <div className="p-3">
+                              <div className="mb-2">
+                                  <h4 className="text-sm font-bold text-white truncate">{art.title}</h4>
+                                  <div className="flex items-center gap-1 text-[10px] text-neutral-400">
+                                      <User size={10} />
+                                      <span className="truncate">{isPromptExpired ? (art.artistName || "Unknown") : "Anonymous"}</span>
+                                  </div>
+                              </div>
+                              <div className="flex items-center justify-end gap-2 mt-3 border-t border-white/5 pt-2">
+                                  <div className="flex items-center gap-1 text-xs text-neutral-400">
+                                      <MessageSquare size={14} />
+                                      <span>{commentCount}</span>
+                                  </div>
                                   <button 
                                       onClick={(e) => { e.stopPropagation(); handleVote(art.id); }} 
                                       disabled={isPromptExpired}
-                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${isVoted ? 'bg-purple-600 text-white shadow-purple-500/20 shadow-lg' : 'bg-white/5 text-neutral-300 hover:bg-white/10'}`}
+                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${isVoted ? 'bg-purple-600 text-white' : 'bg-white/10 text-neutral-300 hover:bg-white/20'}`}
                                   >
                                       <Heart size={14} className={isVoted ? 'fill-current' : ''} />
                                       <span>{art.votes || 0}</span>
                                   </button>
-                                  {commentCount > 0 && (
-                                    <span className="text-[9px] text-neutral-500 flex items-center gap-1">
-                                      <MessageSquare size={10} /> {commentCount}
-                                    </span>
-                                  )}
-                                </div>
-                             </div>
+                              </div>
                           </div>
                         </div>
                     );
@@ -885,7 +1020,7 @@ export default function App() {
       {/* --- LIGHTBOX MODAL --- */}
       {fullScreenArt && (
         <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex flex-col animate-in fade-in duration-300">
-            <div className="absolute top-4 right-4 z-50">
+            <div className="absolute top-6 right-6 z-50">
                 <button onClick={() => setFullScreenArtId(null)} className="text-white/50 hover:text-white p-2 rounded-full bg-white/10 hover:bg-white/20 transition-all"><X size={32} /></button>
             </div>
             
@@ -944,7 +1079,7 @@ export default function App() {
                                 </button>
                             )}
 
-                            {(isAdmin || (user && user.uid === fullScreenArt.authorId)) && (
+                            {(isAdmin || (user && user.uid === fullScreenArt.authorId)) && !isPromptExpired && (
                                 <button 
                                     onClick={(e) => {
                                         e.stopPropagation();
@@ -973,7 +1108,6 @@ export default function App() {
                         <p className="text-center text-neutral-600 text-xs py-4">No comments yet. Be the first!</p>
                       ) : (
                         fullScreenArt.comments.map(c => {
-                          // Check if prompt expired to reveal name
                           const p = prompts.find(pr => pr.id === fullScreenArt.promptId);
                           const isExpired = p && p.deadline && new Date() > new Date(p.deadline);
                           const displayName = isExpired ? c.authorName : "Anonymous";
@@ -1151,7 +1285,7 @@ export default function App() {
             <div className="space-y-2">
               <label className="text-[10px] font-black uppercase tracking-widest text-neutral-500 ml-2">Finished Art</label>
               <div onClick={() => fileInputRef.current.click()} className="w-full aspect-square bg-neutral-800 border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-purple-500/50 transition-all overflow-hidden">
-                {submissionForm.imageUrl ? <img src={submissionForm.imageUrl} className="w-full h-full object-cover" alt="Preview" /> : <><Camera className="text-neutral-600 mb-2" size={32} /><span className="text-xs font-bold text-neutral-500 uppercase">Pick from gallery</span></>}
+                {submissionForm.imageUrl ? <img src={submissionForm.imageUrl} className="w-full h-full object-cover" alt="Preview" /> : <><Camera className="text-neutral-600 mb-2" size={32} /><span className="text-xs font-bold text-neutral-500 uppercase">Click to upload image</span></>}
               </div>
               <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => handleFileChange(e, 'sub')} />
             </div>
