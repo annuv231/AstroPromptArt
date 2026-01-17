@@ -139,6 +139,7 @@ export default function App() {
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isEditPromptModalOpen, setIsEditPromptModalOpen] = useState(false);
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Forms
@@ -147,6 +148,9 @@ export default function App() {
   const [submissionForm, setSubmissionForm] = useState({ title: '', imageUrl: '', passwordAttempt: '' });
   const [tempUsername, setTempUsername] = useState('');
   const [tempSecret, setTempSecret] = useState('');
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [commentText, setCommentText] = useState(''); 
   
   const [message, setMessage] = useState(null);
@@ -232,8 +236,9 @@ export default function App() {
     let unsubscribeVotes;
 
     if (userProfile.username) {
-        // If logged in, listen to GLOBAL Registry votes
-        const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', userProfile.username.toLowerCase());
+        // If logged in, listen to GLOBAL Registry votes (case-insensitive)
+        const normalizedName = userProfile.username.toLowerCase();
+        const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', normalizedName);
         unsubscribeVotes = onSnapshot(registryRef, (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
@@ -261,7 +266,7 @@ export default function App() {
     }
   }, [user, isProfileLoading, userProfile.username]);
 
-  const isAdmin = useMemo(() => userProfile.username === 'Tourist', [userProfile.username]);
+
 
   const isPromptExpired = useMemo(() => {
     if (!selectedPrompt || !selectedPrompt.deadline) return false;
@@ -310,13 +315,7 @@ export default function App() {
     return [...promptSubs].sort((a, b) => (b.votes || 0) - (a.votes || 0))[0];
   }, [selectedPrompt, validSubmissions, isPromptExpired]);
 
-  // Fix: Banner art is now MOST RECENT valid submission, not global winner
-  const bannerArt = useMemo(() => {
-    if (validSubmissions.length === 0) return null;
-    return [...validSubmissions].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))[0];
-  }, [validSubmissions]);
-
-  // FILTERED LISTS
+  // FILTERED LISTS (moved before bannerArt to avoid dependency issues)
   const activePrompts = useMemo(() => {
     return prompts.filter(p => !p.deadline || new Date() <= new Date(p.deadline));
   }, [prompts]);
@@ -325,19 +324,52 @@ export default function App() {
     return prompts.filter(p => p.deadline && new Date() > new Date(p.deadline));
   }, [prompts]);
 
-  // Leaderboard uses valid submissions
+  // Banner art: Show winner from most recent expired challenge, or latest submission if all active
+  const bannerArt = useMemo(() => {
+    if (validSubmissions.length === 0) return null;
+    
+    // Get all expired prompts sorted by deadline (most recent first)
+    const expiredWithSubmissions = expiredPrompts
+      .map(prompt => {
+        const promptSubs = validSubmissions.filter(s => s.promptId === prompt.id);
+        if (promptSubs.length === 0) return null;
+        const winner = [...promptSubs].sort((a, b) => (b.votes || 0) - (a.votes || 0))[0];
+        return { ...winner, promptDeadline: prompt.deadline };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.promptDeadline) - new Date(a.promptDeadline));
+    
+    // If we have winners from expired challenges, show the most recent winner
+    if (expiredWithSubmissions.length > 0) {
+      return expiredWithSubmissions[0];
+    }
+    
+    // Otherwise, show most recent submission from active challenges
+    return [...validSubmissions].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))[0];
+  }, [validSubmissions, expiredPrompts]);
+
+
+  // Leaderboard only shows stats from EXPIRED challenges to protect anonymity
   const leaderboardData = useMemo(() => {
     const nameStats = {};
+    
+    // Get IDs of expired prompts
+    const expiredPromptIds = new Set(expiredPrompts.map(p => p.id));
+    
+    // Only count submissions from expired challenges
     validSubmissions.forEach(sub => {
-        const name = sub.artistName || "Anonymous";
-        if (name === "Anonymous") return; 
+        // Skip if submission is from an active challenge
+        if (!expiredPromptIds.has(sub.promptId)) return;
+        
+        const name = sub.artistName || "Anunymous";
+        if (name === "Anunymous") return; 
         if (!nameStats[name]) nameStats[name] = { name, totalVotes: 0, entries: 0 };
         nameStats[name].totalVotes += (sub.votes || 0);
         nameStats[name].entries += 1;
     });
 
     return Object.values(nameStats).sort((a, b) => b.totalVotes - a.totalVotes);
-  }, [validSubmissions]);
+  }, [validSubmissions, expiredPrompts]);
 
   const mySubmissions = useMemo(() => {
     if (!user) return [];
@@ -470,7 +502,9 @@ export default function App() {
     
     setIsSubmitting(true);
     try {
-        const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', nameToSave.toLowerCase());
+        // Use lowercase for storage/lookup, but preserve original case for display
+        const normalizedName = nameToSave.toLowerCase();
+        const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', normalizedName);
         const registrySnap = await getDoc(registryRef);
 
         let existingVotes = [];
@@ -483,13 +517,10 @@ export default function App() {
             }
             existingVotes = data.votedFor || [];
         } else {
-            if (nameToSave.toLowerCase() === 'tourist' && secretToSave !== 'I am tourist') {
-                setIsSubmitting(false);
-                return showMessage("You are not the Admin.", "error");
-            }
-            // Register globally
+            // Register globally with lowercase key but preserve display name
             await setDoc(registryRef, {
                 secretPhrase: secretToSave,
+                displayName: nameToSave,
                 createdBy: user.uid,
                 votedFor: [], 
                 createdAt: serverTimestamp()
@@ -501,19 +532,65 @@ export default function App() {
         
         await setDoc(registryRef, { votedFor: mergedVotes }, { merge: true });
 
-        let finalName = nameToSave;
-        if (nameToSave.toLowerCase() === 'tourist') finalName = 'Tourist';
-
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'profile'), {
-            username: finalName
+            username: nameToSave
         }, { merge: true });
 
-        showMessage(finalName === 'Tourist' ? "Welcome, Admin." : "Identity Secured", "success");
+        showMessage("Identity Secured", "success");
         if (!userProfile.username) setIsProfileModalOpen(false);
 
     } catch (e) {
         console.error(e);
         showMessage("Failed to save profile", "error");
+    }
+    setIsSubmitting(false);
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    if (!user || !userProfile.username) return;
+
+    if (!oldPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
+      return showMessage("All fields are required.", "error");
+    }
+
+    if (newPassword !== confirmPassword) {
+      return showMessage("New passwords don't match.", "error");
+    }
+
+    if (newPassword.length < 3) {
+      return showMessage("Password must be at least 3 characters.", "error");
+    }
+
+    setIsSubmitting(true);
+    try {
+      const normalizedName = userProfile.username.toLowerCase();
+      const registryRef = doc(db, 'artifacts', appId, 'public', 'data', 'registry', normalizedName);
+      const registrySnap = await getDoc(registryRef);
+
+      if (!registrySnap.exists()) {
+        setIsSubmitting(false);
+        return showMessage("User not found.", "error");
+      }
+
+      const data = registrySnap.data();
+      if (data.secretPhrase !== oldPassword.trim()) {
+        setIsSubmitting(false);
+        return showMessage("Current password is incorrect.", "error");
+      }
+
+      // Update password
+      await setDoc(registryRef, { secretPhrase: newPassword.trim() }, { merge: true });
+
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setIsChangePasswordModalOpen(false);
+      showMessage("Password updated successfully!", "success");
+
+    } catch (e) {
+      console.error(e);
+      showMessage("Failed to update password", "error");
     }
     setIsSubmitting(false);
   };
@@ -529,41 +606,60 @@ export default function App() {
   };
 
   const handleDeleteArt = async (artId) => {
-    // SECURITY CHECK: Verify if prompt is expired
+    if (!user) return;
+    
     const art = submissions.find(s => s.id === artId);
-    if (art) {
-        const p = prompts.find(pr => pr.id === art.promptId);
-        if (p && p.deadline && new Date() > new Date(p.deadline)) {
-            showMessage("Cannot delete archived submissions.", "error");
-            return;
-        }
-    }
-
-    const confirmation = window.prompt("To delete this submission, type 'daddy' below:");
-    if (confirmation !== "daddy") {
-        if (confirmation !== null) showMessage("Incorrect confirmation.", "error");
+    if (!art) return;
+    
+    // Only allow owner to delete
+    if (art.authorId !== user.uid) {
+        showMessage("You can only delete your own submissions.", "error");
         return;
     }
+    
+    // Prevent deletion if challenge is expired (in museum)
+    const p = prompts.find(pr => pr.id === art.promptId);
+    if (p && p.deadline && new Date() > new Date(p.deadline)) {
+        showMessage("Cannot delete submissions from archived challenges.", "error");
+        return;
+    }
+
+    const confirmation = window.confirm("Are you sure you want to delete this submission?");
+    if (!confirmation) return;
 
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'submissions', artId));
       if (fullScreenArtId === artId) setFullScreenArtId(null);
       showMessage("Deleted", "success");
-    } catch (error) { showMessage("Failed", "error"); }
+    } catch (error) { showMessage("Failed to delete", "error"); }
   };
 
   const handleDeletePrompt = async (promptId) => {
-    const confirmation = window.prompt("To delete this prompt, type 'daddy' below:");
-    if (confirmation !== "daddy") {
-        if (confirmation !== null) showMessage("Incorrect confirmation.", "error");
+    if (!user) return;
+    
+    const prompt = prompts.find(p => p.id === promptId);
+    if (!prompt) return;
+    
+    // Only allow owner to delete
+    if (prompt.authorId !== user.uid) {
+        showMessage("You can only delete your own prompts.", "error");
         return;
     }
+    
+    // Prevent deletion if challenge is expired (in museum)
+    if (prompt.deadline && new Date() > new Date(prompt.deadline)) {
+        showMessage("Cannot delete archived prompts.", "error");
+        return;
+    }
+
+    const confirmation = window.confirm("Are you sure you want to delete this prompt? All submissions will remain.");
+    if (!confirmation) return;
 
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'prompts', promptId));
       setSelectedPrompt(null);
       showMessage("Prompt deleted", "success");
-    } catch (error) { showMessage("Failed", "error"); }
+    } catch (error) { showMessage("Failed to delete", "error"); }
   };
 
   const handleVote = async (artId) => {
@@ -702,7 +798,7 @@ service cloud.firestore {
                         </div>
                         <h1 className="text-3xl sm:text-4xl md:text-6xl font-black italic tracking-tighter uppercase drop-shadow-2xl">{String(bannerArt.title)}</h1>
                         <p className="mt-2 text-neutral-400 font-bold uppercase tracking-wider text-xs sm:text-sm">
-                            By {isExpired ? (bannerArt.artistName || "Anonymous") : "Anonymous"} • {isExpired ? (Number(bannerArt.votes || 0) + " votes") : "Votes Hidden"}
+                            By {isExpired ? (bannerArt.artistName || "Anunymous") : "Anunymous"} • {isExpired ? (Number(bannerArt.votes || 0) + " votes") : "Votes Hidden"}
                         </p>
                         </div>
                     </>
@@ -712,7 +808,7 @@ service cloud.firestore {
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-900/50">
             <Palette className="w-12 h-12 text-neutral-800 mb-4 animate-pulse" />
-            <h1 className="text-3xl font-black text-neutral-800 uppercase italic tracking-widest">AstroArts</h1>
+            <h1 className="text-3xl font-black text-neutral-800 uppercase italic tracking-widest">AstroFarts</h1>
           </div>
         )}
       </section>
@@ -766,7 +862,6 @@ service cloud.firestore {
                         <p className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
                             {currentPromptVotesUsed}/{selectedPrompt.maxVotes || 2} votes used
                         </p>
-                        {isAdmin && <span className="bg-rose-600 text-white px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex items-center gap-1"><ShieldAlert size={10} /> Admin</span>}
                    </div>
               </div>
           )}
@@ -776,7 +871,16 @@ service cloud.firestore {
         {viewMode === 'leaderboard' && !selectedPrompt && (
           <div className="max-w-2xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
              <div className="bg-neutral-900 rounded-[2.5rem] border border-white/10 overflow-hidden shadow-2xl p-8">
-               <h3 className="text-2xl font-black italic uppercase tracking-tighter mb-8 text-center flex items-center justify-center gap-3"><Trophy className="text-yellow-500" /> Leaderboard</h3>
+               <h3 className="text-2xl font-black italic uppercase tracking-tighter mb-4 text-center flex items-center justify-center gap-3"><Trophy className="text-yellow-500" /> Leaderboard</h3>
+               
+               {/* Privacy Notice */}
+               <div className="bg-purple-500/10 border border-purple-500/20 rounded-2xl p-4 mb-6">
+                 <p className="text-xs text-purple-300 text-center flex items-center justify-center gap-2">
+                   <Info size={14} />
+                   <span>Rankings based on completed challenges only • Active submissions stay anunymous</span>
+                 </p>
+               </div>
+               
                <div className="space-y-4">
                  {leaderboardData.length === 0 ? <div className="text-center text-neutral-500 py-10 font-bold uppercase tracking-widest text-xs">No Rankings Yet</div> : (
                    leaderboardData.map((data, index) => {
@@ -813,7 +917,7 @@ service cloud.firestore {
                     <div className="col-span-full py-24 text-center border-2 border-dashed border-white/5 rounded-[3rem] text-neutral-700 font-black uppercase italic tracking-widest text-sm md:text-base">No History Found</div>
                 ) : (
                     expiredPrompts.map(p => {
-                        const canDelete = isAdmin || (user && user.uid === p.authorId);
+                        const canDelete = user && user.uid === p.authorId && !(p.deadline && new Date() > new Date(p.deadline));
                         return (
                             <div key={p.id} onClick={() => setSelectedPrompt(p)} className="group bg-neutral-900 rounded-[2.5rem] border border-white/5 overflow-hidden hover:border-purple-500/50 transition-all cursor-pointer shadow-xl relative opacity-80 hover:opacity-100 grayscale hover:grayscale-0">
                                 <div className="aspect-[4/3] relative">
@@ -844,7 +948,7 @@ service cloud.firestore {
                   <div className="col-span-full py-24 text-center border-2 border-dashed border-white/5 rounded-[3rem] text-neutral-700 font-black uppercase italic tracking-widest text-sm md:text-base">No Active Prompts</div>
               ) : (
                   activePrompts.map(p => {
-                    const canDelete = isAdmin || (user && user.uid === p.authorId);
+                    const canDelete = user && user.uid === p.authorId;
                     return (
                         <div key={p.id} onClick={() => setSelectedPrompt(p)} className="group bg-neutral-900 rounded-[2.5rem] border border-white/5 overflow-hidden hover:border-purple-500/50 transition-all cursor-pointer shadow-xl relative">
                         <div className="aspect-[4/3] relative">
@@ -888,7 +992,7 @@ service cloud.firestore {
               <div className="p-6 md:p-10 md:w-1/2 flex flex-col justify-center bg-gradient-to-br from-neutral-900 to-black">
                 <div className="flex items-center gap-2 mb-2">
                    <div className="bg-white/10 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider text-neutral-300">Prompt by {selectedPrompt.creatorName || "Unknown"}</div>
-                   {(isAdmin || (user && user.uid === selectedPrompt.authorId)) && (
+                   {!isPromptExpired && user && user.uid === selectedPrompt.authorId && (
                       <div className="flex gap-2">
                         <button onClick={() => openEditModal(selectedPrompt)} className="bg-white/10 text-white px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider hover:bg-white/20 transition-all flex items-center gap-1"><Settings size={12} /> Edit</button>
                         <button onClick={() => handleDeletePrompt(selectedPrompt.id)} className="bg-rose-500/10 text-rose-500 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1"><Trash2 size={12} /> Delete</button>
@@ -989,7 +1093,7 @@ service cloud.firestore {
                                   <h4 className="text-sm font-bold text-white truncate">{art.title}</h4>
                                   <div className="flex items-center gap-1 text-[10px] text-neutral-400">
                                       <User size={10} />
-                                      <span className="truncate">{isPromptExpired ? (art.artistName || "Unknown") : "Anonymous"}</span>
+                                      <span className="truncate">{isPromptExpired ? (art.artistName || "Unknown") : "Anunymous"}</span>
                                   </div>
                               </div>
                               <div className="flex items-center justify-end gap-2 mt-3 border-t border-white/5 pt-2">
@@ -1046,8 +1150,8 @@ service cloud.firestore {
                                       {(() => {
                                         if (!fullScreenArt.id) return fullScreenArt.artistName || "Original Prompt";
                                         const p = prompts.find(pr => pr.id === fullScreenArt.promptId);
-                                        if (p && p.deadline && new Date() > new Date(p.deadline)) return fullScreenArt.artistName || "Anonymous";
-                                        return "Anonymous"; // Always anonymous if active
+                                        if (p && p.deadline && new Date() > new Date(p.deadline)) return fullScreenArt.artistName || "Anunymous";
+                                        return "Anunymous"; // Always anunymous if active
                                       })()}
                                     </span>
                                 </p>
@@ -1079,7 +1183,7 @@ service cloud.firestore {
                                 </button>
                             )}
 
-                            {(isAdmin || (user && user.uid === fullScreenArt.authorId)) && !isPromptExpired && (
+                            {user && user.uid === fullScreenArt.authorId && !isPromptExpired && (
                                 <button 
                                     onClick={(e) => {
                                         e.stopPropagation();
@@ -1110,12 +1214,12 @@ service cloud.firestore {
                         fullScreenArt.comments.map(c => {
                           const p = prompts.find(pr => pr.id === fullScreenArt.promptId);
                           const isExpired = p && p.deadline && new Date() > new Date(p.deadline);
-                          const displayName = isExpired ? c.authorName : "Anonymous";
+                          const displayName = isExpired ? c.authorName : "Anunymous";
                           
                           return (
                             <div key={c.id} className="bg-white/5 p-3 rounded-xl">
                               <div className="flex justify-between items-start mb-1">
-                                <span className={`text-[10px] font-bold uppercase tracking-wider ${displayName === "Anonymous" ? "text-neutral-500" : "text-purple-400"}`}>
+                                <span className={`text-[10px] font-bold uppercase tracking-wider ${displayName === "Anunymous" ? "text-neutral-500" : "text-purple-400"}`}>
                                   {displayName}
                                 </span>
                                 <span className="text-[9px] text-neutral-600">{new Date(c.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
@@ -1196,7 +1300,13 @@ service cloud.firestore {
                  </form>
 
                  {userProfile.username && (
-                    <div className="mt-6 pt-4 border-t border-white/5 flex justify-center">
+                    <div className="mt-6 pt-4 border-t border-white/5 flex justify-center gap-4">
+                        <button 
+                            onClick={() => setIsChangePasswordModalOpen(true)}
+                            className="flex items-center gap-2 text-purple-400 hover:text-purple-300 text-xs font-black uppercase tracking-widest transition-colors"
+                        >
+                            <KeyRound size={14} /> Change Password
+                        </button>
                         <button 
                             onClick={handleLogout}
                             className="flex items-center gap-2 text-rose-500 hover:text-rose-400 text-xs font-black uppercase tracking-widest transition-colors"
@@ -1294,6 +1404,54 @@ service cloud.firestore {
               <div className="absolute right-6 top-12 text-neutral-500">{submissionForm.passwordAttempt === selectedPrompt.password ? <Unlock size={18} className="text-emerald-500" /> : <Lock size={18} />}</div>
             </div>
             <button disabled={isSubmitting} className="w-full bg-purple-600 py-5 rounded-2xl font-black hover:bg-purple-500 transition-all uppercase italic shadow-xl shadow-purple-500/10">{isSubmitting ? 'Uploading...' : 'Confirm Upload'}</button>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal Change Password */}
+      {isChangePasswordModalOpen && (
+        <Modal title="Change Password" onClose={() => setIsChangePasswordModalOpen(false)}>
+          <form onSubmit={handleChangePassword} className="space-y-6">
+            <div className="bg-purple-500/10 border border-purple-500/20 rounded-2xl p-4 mb-6">
+              <p className="text-xs text-purple-300 flex items-center gap-2">
+                <Info size={14} />
+                <span>Your secret phrase is used to reclaim your username on other devices.</span>
+              </p>
+            </div>
+            
+            <Input 
+              label="Current Password" 
+              type="password" 
+              value={oldPassword} 
+              onChange={v => setOldPassword(v)} 
+              placeholder="Enter current password"
+              required 
+            />
+            
+            <Input 
+              label="New Password" 
+              type="password" 
+              value={newPassword} 
+              onChange={v => setNewPassword(v)} 
+              placeholder="Enter new password"
+              required 
+            />
+            
+            <Input 
+              label="Confirm New Password" 
+              type="password" 
+              value={confirmPassword} 
+              onChange={v => setConfirmPassword(v)} 
+              placeholder="Confirm new password"
+              required 
+            />
+            
+            <button 
+              disabled={isSubmitting} 
+              className="w-full bg-purple-600 text-white py-5 rounded-2xl font-black hover:bg-purple-500 transition-all uppercase italic shadow-xl shadow-purple-500/10"
+            >
+              {isSubmitting ? 'Updating...' : 'Update Password'}
+            </button>
           </form>
         </Modal>
       )}

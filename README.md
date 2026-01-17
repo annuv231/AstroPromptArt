@@ -1,41 +1,47 @@
-# 🎨 AstroArts
+# 🎨 AstroFarts
 
 A collaborative, gamified art challenge platform designed for friends to share creativity anonymously. Create prompts, submit art, vote for favorites, and climb the cosmic ranks!
 
-## ✨  Features
+## ✨ Features
 
-Prompt Challenges: Users can create drawing prompts with deadlines.
+**Prompt Challenges**: Users can create drawing prompts with deadlines.
 
-Anonymous Submissions: Submissions are anonymous until the challenge ends.
+**Anonymous Submissions**: Submissions are anonymous until the challenge ends.
 
-Voting System: Users can vote for their favorite pieces (configurable max votes per challenge).
+**Voting System**: Users can vote for their favorite pieces (configurable max votes per challenge).
 
-Gamification:
+**Gamification**:
+- **Leaderboard**: Track total votes across all challenges.
+- **Cosmic Ranks**: Earn titles like "Moon Walker" or "Universe Creator" based on votes received.
 
-Leaderboard: Track total votes across all challenges.
+**Interactive Lightbox**: View art in full screen, zoom, vote, and comment.
 
-Cosmic Ranks: Earn titles like "Moon Walker" or "Universe Creator" based on votes received.
+**Comments**: Leave anonymous feedback (names revealed after the deadline).
 
-Interactive Lightbox: View art in full screen, zoom, vote, and comment.
+**Mission Recap**: Automatic collage generation for expired challenges showcasing the winner.
 
-Comments: Leave anonymous feedback (names revealed after the deadline).
+**User Control**: Delete your own content during active challenges. Once archived in the museum, content is permanent.
 
-Mission Recap: Automatic collage generation for expired challenges showcasing the winner.
+**Mobile First**: Fully responsive design that looks great on phones and desktops.
 
-Admin Control: Special "Tourist" admin role for moderation (deleting content).
+## 🛡️ Content Management
 
-Mobile First: Fully responsive design that looks great on phones and desktops.
+- Users can only delete their own submissions and prompts
+- Deletion is only allowed during active challenges
+- Once a challenge expires and moves to the Museum, all content becomes permanent
+- No admin privileges - all users are equal
 
-## Tech Stack
+## 🛠️ Tech Stack
 
-Frontend: React (Vite)
+**Frontend**: React (Vite)
 
-Styling: Tailwind CSS
+**Styling**: Tailwind CSS
 
-Backend/Database: Firebase (Firestore)
+**Backend/Database**: Firebase (Firestore)
 
-Authentication: Firebase Auth (Anonymous & Persistent Identity)
+**Authentication**: Firebase Auth (Anonymous & Persistent Identity)
 
-Hosting: Firebase Hosting
+**Hosting**: Firebase Hosting
 
-Icons: Lucide React
+**Icons**: Lucide React
+
